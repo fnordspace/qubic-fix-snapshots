@@ -184,34 +184,94 @@ def convert_tx_status(input_file: str, output_file: str,
 
 
 def main():
-    if len(sys.argv) != 5:
-        print("Usage: python convert_tx_status_snapshot.py <input_file> <output_file> <old_tick_duration_ms> <new_tick_duration_ms>")
-        print()
-        print("Example:")
-        print("  python convert_tx_status_snapshot.py ep176/snapshotTxStatusData ep176/snapshotTxStatusData.new 3000 2000")
-        print()
-        print("This will convert the file from TARGET_TICK_DURATION=3000 to TARGET_TICK_DURATION=2000")
-        print()
-        print("After conversion, replace the original file:")
-        print("  mv ep176/snapshotTxStatusData ep176/snapshotTxStatusData.backup")
-        print("  mv ep176/snapshotTxStatusData.new ep176/snapshotTxStatusData")
-        sys.exit(1)
+    import argparse
     
-    input_file = sys.argv[1]
-    output_file = sys.argv[2]
-    old_tick_duration = int(sys.argv[3])
-    new_tick_duration = int(sys.argv[4])
+    parser = argparse.ArgumentParser(
+        description='Adjust snapshotTxStatusData when TARGET_TICK_DURATION changes',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Change from 3 seconds to 2 seconds per tick
+  %(prog)s snapshotTxStatusData --old-duration 3000 --new-duration 2000
+  
+  # Change from 2 seconds to 5 seconds per tick
+  %(prog)s snapshotTxStatusData --old-duration 2000 --new-duration 5000
+  
+  # Save to different file
+  %(prog)s snapshotTxStatusData --old-duration 3000 --new-duration 2000 --output adjusted.db
+  
+Note: TARGET_TICK_DURATION is in milliseconds (3000 = 3 seconds)
+        """
+    )
     
-    if old_tick_duration <= 0 or new_tick_duration <= 0:
+    parser.add_argument(
+        'filepath',
+        help='Path to snapshotTxStatusData file to adjust'
+    )
+    parser.add_argument(
+        '--old-duration',
+        type=int,
+        required=True,
+        help='Old TARGET_TICK_DURATION in milliseconds'
+    )
+    parser.add_argument(
+        '--new-duration',
+        type=int,
+        required=True,
+        help='New TARGET_TICK_DURATION in milliseconds'
+    )
+    parser.add_argument(
+        '--output',
+        help='Output file path (default: overwrite input file)'
+    )
+    parser.add_argument(
+        '--no-backup',
+        action='store_true',
+        help='Do not create backup file'
+    )
+    parser.add_argument(
+        '--show-calculation',
+        action='store_true',
+        help='Show the MAX_NUMBER_OF_TICKS_PER_EPOCH calculation details'
+    )
+    
+    args = parser.parse_args()
+    
+    if args.show_calculation:
+        print("MAX_NUMBER_OF_TICKS_PER_EPOCH Calculation:")
+        print("="*50)
+        for duration in [1000, 2000, 3000, 4000, 5000]:
+            max_ticks = calculate_max_ticks_per_epoch(duration)
+            print(f"  TARGET_TICK_DURATION = {duration}ms -> {max_ticks:,} max ticks")
+        print()
+    
+    if args.old_duration == args.new_duration:
+        print("Old and new durations are the same. No adjustment needed.")
+        return
+    
+    if args.old_duration <= 0 or args.new_duration <= 0:
         print("Error: Tick durations must be positive integers (milliseconds)")
         sys.exit(1)
     
-    if input_file == output_file:
-        print("Error: Input and output files must be different")
-        print("Tip: Use a temporary output file and then replace the original")
-        sys.exit(1)
+    # Create backup unless disabled
+    if not args.no_backup and not args.output:
+        import shutil
+        backup_path = args.filepath + '.backup'
+        shutil.copy2(args.filepath, backup_path)
+        print(f"Created backup at: {backup_path}")
     
-    convert_tx_status(input_file, output_file, old_tick_duration, new_tick_duration)
+    # Determine output file
+    output_file = args.output if args.output else args.filepath
+    
+    # If overwriting and no output specified, use temp file
+    if not args.output:
+        temp_file = args.filepath + '.tmp'
+        convert_tx_status(args.filepath, temp_file, args.old_duration, args.new_duration)
+        # Move temp file to original
+        import shutil
+        shutil.move(temp_file, args.filepath)
+    else:
+        convert_tx_status(args.filepath, output_file, args.old_duration, args.new_duration)
 
 
 if __name__ == "__main__":

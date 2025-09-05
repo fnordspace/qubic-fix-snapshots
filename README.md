@@ -50,22 +50,30 @@ This script is specifically for nodes with `ADDON_TX_STATUS_REQUEST` enabled. It
 - Warns if truncation would lose transaction data
 - Verifies the converted file is valid
 - Shows statistics about data usage
+- Automatically creates a backup of the original file
 
 **Usage:**
 ```bash
-# Convert from 3000ms to 2000ms tick duration
-python adjust_tx_status.py ep176/snapshotTxStatusData ep176/snapshotTxStatusData.new 3000 2000
+# Change from 3 seconds to 2 seconds per tick
+python adjust_tx_status.py snapshotTxStatusData --old-duration 3000 --new-duration 2000
 
-# After verification, replace the original
-mv ep176/snapshotTxStatusData ep176/snapshotTxStatusData.backup
-mv ep176/snapshotTxStatusData.new ep176/snapshotTxStatusData
+# Change from 2 seconds to 5 seconds per tick
+python adjust_tx_status.py snapshotTxStatusData --old-duration 2000 --new-duration 5000
+
+# Save to different file
+python adjust_tx_status.py snapshotTxStatusData --old-duration 3000 --new-duration 2000 --output adjusted.db
+
+# Show calculation details
+python adjust_tx_status.py snapshotTxStatusData --old-duration 3000 --new-duration 2000 --show-calculation
 ```
 
 **Parameters:**
-- `input_file`: Path to the original snapshotTxStatusData file
-- `output_file`: Path for the converted file
-- `old_tick_duration_ms`: Old TARGET_TICK_DURATION in milliseconds
-- `new_tick_duration_ms`: New TARGET_TICK_DURATION in milliseconds
+- `filepath`: Path to the snapshotTxStatusData file to adjust
+- `--old-duration`: Old TARGET_TICK_DURATION in milliseconds
+- `--new-duration`: New TARGET_TICK_DURATION in milliseconds
+- `--output`: Optional output file path (default: overwrite input)
+- `--no-backup`: Skip creating backup file
+- `--show-calculation`: Display MAX_NUMBER_OF_TICKS_PER_EPOCH calculation details
 
 ## Requirements
 
