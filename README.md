@@ -2,6 +2,28 @@
 
 This repository contains Python scripts for adjusting Qubic Core node save state files when changing the `TARGET_TICK_DURATION` parameter mid-epoch.
 
+## Data Structures
+
+### logEventState.db Structure
+The `adjust_log_state.py` script modifies the following binary file structure:
+- **Log Buffer Page** (300MB): Virtual memory page containing raw log entries
+- **PMAP Page** (480MB): Page map for memory management  
+- **IMAP Page** (164.64MB): Index map for memory management
+- **Digest Array** (variable size): Array of 32-byte digests indexed by tick offset, size = `MAX_NUMBER_OF_TICKS_PER_EPOCH * 32 bytes`
+- **K12 State** (400 bytes): Cryptographic state
+- **Variables** (32 bytes): `logBufferTail` (8B), `logId` (8B), `tickBegin` (4B), `lastUpdatedTick` (4B), `currentTxId` (4B), `currentTick` (4B)
+
+The script resizes only the digest array when `TARGET_TICK_DURATION` changes, preserving all other data.
+
+### snapshotTxStatusData Structure  
+The `adjust_tx_status.py` script modifies the following binary file structure:
+- **tickTxCounter Array**: Number of confirmed transactions per tick, size = `(MAX_NUMBER_OF_TICKS_PER_EPOCH + 100) * 4 bytes`
+- **tickTxIndexStart Array**: Starting index in confirmedTx array for each tick's transactions, size = `(MAX_NUMBER_OF_TICKS_PER_EPOCH + 100) * 4 bytes`
+- **confirmedTxPreviousEpochBeginTick** (4 bytes): First tick of the previous epoch for which confirmed transactions are stored
+- **confirmedTxCurrentEpochBeginTick** (4 bytes): First tick of the current epoch for which confirmed transactions are stored
+
+The script resizes both arrays by expanding with zeros or truncating when `TARGET_TICK_DURATION` changes.
+
 ## Scripts
 
 ### 1. adjust_log_state.py
