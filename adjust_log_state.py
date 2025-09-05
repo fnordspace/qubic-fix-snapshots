@@ -331,11 +331,6 @@ Note: TARGET_TICK_DURATION is in milliseconds (3000 = 3 seconds)
             adjuster.show_pg_files_info()
             
             print("\n✓ Adjustment completed successfully!")
-            print(f"\nNext steps:")
-            print(f"1. Update TARGET_TICK_DURATION to {args.new_duration} in public_settings.h")
-            print(f"2. Recompile the node")
-            print(f"3. Start the node with the adjusted logEventState.db")
-            print(f"4. The .pg files will continue to work without modification")
         else:
             print("\n✗ Verification failed! File not written.")
             sys.exit(1)
