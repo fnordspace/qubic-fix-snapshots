@@ -41,12 +41,12 @@ def calculate_max_ticks_per_epoch(target_tick_duration_ms, number_of_computors=6
 class LogStateAdjuster:
     """Adjusts logEventState.db for different TARGET_TICK_DURATION values"""
     
-    # Fixed sizes from the code
+    # Fixed sizes from the C++ code
     LOG_BUFFER_PAGE_SIZE = 300_000_000
-    PMAP_PAGE_SIZE = 480_000_000  # 30M * 16
-    IMAP_PAGE_SIZE = 164_640_000  # 10K * 16464
+    PMAP_LOG_PAGE_SIZE = 30_000_000
+    IMAP_LOG_PAGE_SIZE = 10_000
     DIGEST_SIZE = 32  # Each digest is 32 bytes
-    K12_STATE_SIZE = 400  # Approximate K12 instance size
+    K12_STATE_SIZE = 448  # sizeof(XKCP::KangarooTwelve_Instance)
     VARIABLES_SIZE = 32  # 8+8+4+4+4+4 bytes
     NUMBER_OF_COMPUTORS = 676
     
@@ -61,8 +61,12 @@ class LogStateAdjuster:
         
         self.data = None
         
-        print(f"TARGET_TICK_DURATION: {old_tick_duration}ms -> {new_tick_duration}ms")
-        print(f"MAX_NUMBER_OF_TICKS_PER_EPOCH: {self.old_max_ticks:,} -> {self.new_max_ticks:,}")
+        print("Adjusting logEventState.db file:")
+        print(f"  OLD TARGET_TICK_DURATION: {old_tick_duration} ms")
+        print(f"  NEW TARGET_TICK_DURATION: {new_tick_duration} ms")
+        print(f"  OLD MAX_NUMBER_OF_TICKS_PER_EPOCH: {self.old_max_ticks}")
+        print(f"  NEW MAX_NUMBER_OF_TICKS_PER_EPOCH: {self.new_max_ticks}")
+        print()
         
     def read_file(self):
         """Read the entire file into memory"""
@@ -72,7 +76,7 @@ class LogStateAdjuster:
         with open(self.filepath, 'rb') as f:
             self.data = bytearray(f.read())  # Use bytearray for mutability
         
-        print(f"\nLoaded {len(self.data):,} bytes from {self.filepath}")
+        print(f"Input file size: {len(self.data)} bytes")
         
     def backup_file(self):
         """Create a backup of the original file"""
@@ -80,103 +84,133 @@ class LogStateAdjuster:
         shutil.copy2(self.filepath, backup_path)
         print(f"Created backup at: {backup_path}")
         
-    def calculate_offsets(self):
-        """Calculate the offsets of each section"""
-        offsets = {}
+    def calculate_sizes(self):
+        """Calculate the sizes of each section"""
+        # Match C++ calculations exactly
+        log_buffer_vm_size = self.LOG_BUFFER_PAGE_SIZE + 8 + 8
+        map_log_id_vm_size = self.PMAP_LOG_PAGE_SIZE * 16 + 8 + 8  # sizeof(BlobInfo) = 16
+        map_tx_vm_size = self.IMAP_LOG_PAGE_SIZE * 16464 + 8 + 8  # sizeof(TickBlobInfo) = 16464
+        old_digests_size = 32 * self.old_max_ticks
+        new_digests_size = 32 * self.new_max_ticks
         
-        # Three virtual memory dumps
-        offset = 0
-        offsets['log_buffer_start'] = offset
-        offset += self.LOG_BUFFER_PAGE_SIZE + 16  # page + currentId + currentPageId
-        
-        offsets['pmap_start'] = offset
-        offset += self.PMAP_PAGE_SIZE + 16
-        
-        offsets['imap_start'] = offset
-        offset += self.IMAP_PAGE_SIZE + 16
-        
-        # Digests array (this is what changes!)
-        offsets['digests_start'] = offset
-        offsets['old_digests_size'] = self.old_max_ticks * self.DIGEST_SIZE
-        offsets['new_digests_size'] = self.new_max_ticks * self.DIGEST_SIZE
-        offset += offsets['old_digests_size']
-        
-        # K12 state
-        offsets['k12_start'] = offset
-        offset += self.K12_STATE_SIZE
-        
-        # Variables
-        offsets['variables_start'] = offset
-        offset += self.VARIABLES_SIZE
-        
-        offsets['file_end'] = offset
-        
-        return offsets
+        return {
+            'log_buffer_vm_size': log_buffer_vm_size,
+            'map_log_id_vm_size': map_log_id_vm_size,
+            'map_tx_vm_size': map_tx_vm_size,
+            'old_digests_size': old_digests_size,
+            'new_digests_size': new_digests_size
+        }
     
     def adjust_file(self):
         """Adjust the file for the new TARGET_TICK_DURATION"""
-        offsets = self.calculate_offsets()
+        sizes = self.calculate_sizes()
         
-        print(f"\nAdjusting digest array:")
-        print(f"  Old size: {offsets['old_digests_size']:,} bytes ({offsets['old_digests_size'] / 1024 / 1024:.2f} MB)")
-        print(f"  New size: {offsets['new_digests_size']:,} bytes ({offsets['new_digests_size'] / 1024 / 1024:.2f} MB)")
-        print(f"  Difference: {offsets['new_digests_size'] - offsets['old_digests_size']:+,} bytes")
+        # Calculate expected old file size
+        expected_old_size = (sizes['log_buffer_vm_size'] + sizes['map_log_id_vm_size'] + 
+                            sizes['map_tx_vm_size'] + sizes['old_digests_size'] + 
+                            self.K12_STATE_SIZE + self.VARIABLES_SIZE)
         
-        # Extract the current sections
-        digests_data = self.data[offsets['digests_start']:offsets['digests_start'] + offsets['old_digests_size']]
-        k12_data = self.data[offsets['k12_start']:offsets['k12_start'] + self.K12_STATE_SIZE]
-        variables_data = self.data[offsets['variables_start']:offsets['variables_start'] + self.VARIABLES_SIZE]
+        print("Expected input file structure:")
+        print(f"  Log buffer VM: {sizes['log_buffer_vm_size']} bytes")
+        print(f"  MapLogId VM: {sizes['map_log_id_vm_size']} bytes")
+        print(f"  MapTx VM: {sizes['map_tx_vm_size']} bytes")
+        print(f"  Digests (old): {sizes['old_digests_size']} bytes")
+        print(f"  K12 instance: {self.K12_STATE_SIZE} bytes")
+        print(f"  Variables: {self.VARIABLES_SIZE} bytes")
+        print(f"  Expected total: {expected_old_size} bytes")
         
-        # Parse variables to show what we're preserving
-        log_buffer_tail = struct.unpack('<Q', variables_data[0:8])[0]
-        log_id = struct.unpack('<Q', variables_data[8:16])[0]
-        tick_begin = struct.unpack('<I', variables_data[16:20])[0]
-        last_updated_tick = struct.unpack('<I', variables_data[20:24])[0]
-        current_tx_id = struct.unpack('<I', variables_data[24:28])[0]
-        current_tick = struct.unpack('<I', variables_data[28:32])[0]
-        
-        print(f"\nPreserving variables:")
-        print(f"  Log Buffer Tail: {log_buffer_tail:,}")
-        print(f"  Current Log ID: {log_id:,}")
-        print(f"  Tick Begin: {tick_begin:,}")
-        print(f"  Last Updated Tick: {last_updated_tick:,}")
-        print(f"  Current TX ID: {current_tx_id}")
-        print(f"  Current Tick: {current_tick:,}")
-        
-        # Check how many digests are actually used
-        ticks_used = last_updated_tick - tick_begin + 1 if last_updated_tick >= tick_begin else 0
-        print(f"\nDigests actually used: {ticks_used:,} (of {self.old_max_ticks:,} allocated)")
-        
-        if ticks_used > self.new_max_ticks:
-            print(f"\n⚠️  WARNING: {ticks_used:,} ticks used but new limit is {self.new_max_ticks:,}")
-            print("   Some digest data will be lost!")
-            response = input("   Continue anyway? (y/N): ")
+        if abs(len(self.data) - expected_old_size) > 1000:
+            print(f"\nWarning: File size doesn't match expected size (difference: {abs(len(self.data) - expected_old_size)} bytes)")
+            print("File might not be from TARGET_TICK_DURATION={} or K12 size is different".format(self.old_tick_duration))
+            response = input("Continue anyway? (y/n): ")
             if response.lower() != 'y':
-                print("Aborted.")
                 sys.exit(1)
         
-        # Create new file data
-        new_data = bytearray()
+        # Calculate actual K12 size based on file
+        actual_k12_size = (len(self.data) - sizes['log_buffer_vm_size'] - sizes['map_log_id_vm_size'] - 
+                          sizes['map_tx_vm_size'] - sizes['old_digests_size'] - self.VARIABLES_SIZE)
+        print(f"\nActual K12 instance size: {actual_k12_size} bytes")
         
-        # Copy everything before digests unchanged
-        new_data.extend(self.data[0:offsets['digests_start']])
+        # Create new buffer for adjusted file
+        new_file_size = (sizes['log_buffer_vm_size'] + sizes['map_log_id_vm_size'] + 
+                        sizes['map_tx_vm_size'] + sizes['new_digests_size'] + 
+                        actual_k12_size + self.VARIABLES_SIZE)
+        new_data = bytearray(new_file_size)
         
-        # Handle digest array resize
-        if offsets['new_digests_size'] > offsets['old_digests_size']:
-            # Expanding - add zeros
-            new_data.extend(digests_data)
-            new_data.extend(b'\x00' * (offsets['new_digests_size'] - offsets['old_digests_size']))
-            print(f"\n✓ Expanded digest array with {offsets['new_digests_size'] - offsets['old_digests_size']:,} zero bytes")
-        else:
-            # Shrinking - truncate
-            new_data.extend(digests_data[:offsets['new_digests_size']])
-            print(f"\n✓ Truncated digest array by {offsets['old_digests_size'] - offsets['new_digests_size']:,} bytes")
+        print("\nAdjusting file structure...")
         
-        # Append K12 state and variables
-        new_data.extend(k12_data)
-        new_data.extend(variables_data)
+        # Copy data sections
+        src_offset = 0
+        dst_offset = 0
         
-        print(f"\nNew file size: {len(new_data):,} bytes (was {len(self.data):,} bytes)")
+        # 1. Copy Log buffer VM state (unchanged)
+        print("  Copying log buffer VM state...")
+        copy_size = sizes['log_buffer_vm_size']
+        new_data[dst_offset:dst_offset+copy_size] = self.data[src_offset:src_offset+copy_size]
+        src_offset += copy_size
+        dst_offset += copy_size
+        
+        # 2. Copy MapLogId VM state (unchanged)
+        print("  Copying MapLogId VM state...")
+        copy_size = sizes['map_log_id_vm_size']
+        new_data[dst_offset:dst_offset+copy_size] = self.data[src_offset:src_offset+copy_size]
+        src_offset += copy_size
+        dst_offset += copy_size
+        
+        # 3. Copy MapTx VM state (unchanged)
+        print("  Copying MapTx VM state...")
+        copy_size = sizes['map_tx_vm_size']
+        new_data[dst_offset:dst_offset+copy_size] = self.data[src_offset:src_offset+copy_size]
+        src_offset += copy_size
+        dst_offset += copy_size
+        
+        # 4. Adjust digests array
+        print("  Adjusting digests array...")
+        
+        # First, clear the new digests area with zeros
+        for i in range(sizes['new_digests_size']):
+            new_data[dst_offset + i] = 0
+        
+        # Copy existing digests (tick numbers don't change)
+        ticks_to_copy = min(self.old_max_ticks, self.new_max_ticks)
+        copy_size = ticks_to_copy * 32
+        new_data[dst_offset:dst_offset+copy_size] = self.data[src_offset:src_offset+copy_size]
+        
+        src_offset += sizes['old_digests_size']
+        dst_offset += sizes['new_digests_size']
+        
+        # 5. Copy K12 instance (unchanged)
+        print("  Copying K12 instance...")
+        new_data[dst_offset:dst_offset+actual_k12_size] = self.data[src_offset:src_offset+actual_k12_size]
+        src_offset += actual_k12_size
+        dst_offset += actual_k12_size
+        
+        # 6. Read and adjust variables
+        print("  Adjusting variables...")
+        
+        # Read variables from old file
+        log_buffer_tail = struct.unpack('<Q', self.data[src_offset:src_offset+8])[0]
+        log_id = struct.unpack('<Q', self.data[src_offset+8:src_offset+16])[0]
+        tick_begin = struct.unpack('<I', self.data[src_offset+16:src_offset+20])[0]
+        last_updated_tick = struct.unpack('<I', self.data[src_offset+20:src_offset+24])[0]
+        current_tx_id = struct.unpack('<I', self.data[src_offset+24:src_offset+28])[0]
+        current_tick = struct.unpack('<I', self.data[src_offset+28:src_offset+32])[0]
+        
+        print("\nVariables:")
+        print(f"  logBufferTail: {log_buffer_tail}")
+        print(f"  logId: {log_id}")
+        print(f"  tickBegin: {tick_begin}")
+        print(f"  lastUpdatedTick: {last_updated_tick}")
+        print(f"  currentTxId: {current_tx_id}")
+        print(f"  currentTick: {current_tick}")
+        
+        # Write variables to new buffer (unchanged - ticks are absolute events)
+        struct.pack_into('<Q', new_data, dst_offset, log_buffer_tail)
+        struct.pack_into('<Q', new_data, dst_offset+8, log_id)
+        struct.pack_into('<I', new_data, dst_offset+16, tick_begin)
+        struct.pack_into('<I', new_data, dst_offset+20, last_updated_tick)
+        struct.pack_into('<I', new_data, dst_offset+24, current_tx_id)
+        struct.pack_into('<I', new_data, dst_offset+28, current_tick)
         
         return new_data
     
@@ -188,61 +222,12 @@ class LogStateAdjuster:
         with open(output_path, 'wb') as f:
             f.write(data)
         
-        print(f"\n✓ Written adjusted file to: {output_path}")
+        print(f"\nWriting output file...")
+        print(f"Output file size: {len(data)} bytes")
+        print(f"Size difference: {len(data) - len(self.data)} bytes")
+        print(f"\nSuccessfully adjusted {output_path}")
     
-    def verify_adjustment(self, new_data):
-        """Verify the adjusted file will load correctly"""
-        print("\nVerifying adjusted file structure:")
-        
-        # Calculate expected offsets with new size
-        offset = 0
-        offset += self.LOG_BUFFER_PAGE_SIZE + 16
-        offset += self.PMAP_PAGE_SIZE + 16
-        offset += self.IMAP_PAGE_SIZE + 16
-        offset += self.new_max_ticks * self.DIGEST_SIZE
-        offset += self.K12_STATE_SIZE
-        offset += self.VARIABLES_SIZE
-        
-        print(f"  Expected size: {offset:,} bytes")
-        print(f"  Actual size: {len(new_data):,} bytes")
-        print(f"  Match: {'✓ YES' if offset == len(new_data) else '✗ NO'}")
-        
-        # Verify variables are at correct position
-        var_offset = len(new_data) - self.VARIABLES_SIZE
-        variables_check = new_data[var_offset:var_offset + self.VARIABLES_SIZE]
-        
-        log_id_check = struct.unpack('<Q', variables_check[8:16])[0]
-        tick_check = struct.unpack('<I', variables_check[28:32])[0]
-        
-        print(f"\nVariable position check:")
-        print(f"  Log ID at new position: {log_id_check:,}")
-        print(f"  Current tick at new position: {tick_check:,}")
-        
-        return offset == len(new_data)
     
-    def show_pg_files_info(self):
-        """Show information about .pg files"""
-        print("\n" + "="*60)
-        print("IMPORTANT: About .pg Page Files")
-        print("="*60)
-        print("""
-The .pg files on disk do NOT need to be adjusted because:
-
-1. They contain raw log buffer pages (300MB each of log entries)
-2. Log entries have their tick number embedded in the header
-3. The virtual memory system will still find them by page ID
-4. Page IDs don't change with TARGET_TICK_DURATION
-
-What the .pg files contain:
-  - Sequential log entries with headers
-  - Each entry: [epoch][tick][size/type][logId][digest][message]
-  - No dependency on MAX_NUMBER_OF_TICKS_PER_EPOCH
-
-The only tick-indexed structure is the digest array in logEventState.db,
-which maps tick offset -> digest for state verification.
-
-✓ Your existing .pg files will work perfectly with the adjusted node!
-""")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -322,18 +307,8 @@ Note: TARGET_TICK_DURATION is in milliseconds (3000 = 3 seconds)
         # Adjust the file
         new_data = adjuster.adjust_file()
         
-        # Verify the adjustment
-        if adjuster.verify_adjustment(new_data):
-            # Write the adjusted file
-            adjuster.write_file(new_data, args.output)
-            
-            # Show info about .pg files
-            adjuster.show_pg_files_info()
-            
-            print("\n✓ Adjustment completed successfully!")
-        else:
-            print("\n✗ Verification failed! File not written.")
-            sys.exit(1)
+        # Write the adjusted file
+        adjuster.write_file(new_data, args.output)
     
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)

@@ -10,7 +10,7 @@ The `adjust_log_state.py` script modifies the following binary file structure:
 - **PMAP Page** (480MB): Page map for memory management  
 - **IMAP Page** (164.64MB): Index map for memory management
 - **Digest Array** (variable size): Array of 32-byte digests indexed by tick offset, size = `MAX_NUMBER_OF_TICKS_PER_EPOCH * 32 bytes`
-- **K12 State** (400 bytes): Cryptographic state
+- **K12 State** (448 bytes): Cryptographic state (sizeof XKCP::KangarooTwelve_Instance)
 - **Variables** (32 bytes): `logBufferTail` (8B), `logId` (8B), `tickBegin` (4B), `lastUpdatedTick` (4B), `currentTxId` (4B), `currentTick` (4B)
 
 The script resizes only the digest array when `TARGET_TICK_DURATION` changes, preserving all other data.
